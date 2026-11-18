@@ -1,0 +1,35 @@
+# 更新说明
+
+## v0.2.0 — 平台适配层对齐 weflow-cli 真实接口
+
+这一版把 `lib/wechat.js` 从「照着文档猜命令」改成「对着 weflow-cli@1.21.17 的发布包源码核对」。之前的模板（`sync list` / `sync run`）是不存在的子命令，live 模式必然失败。
+
+### 变更
+
+- **命令模板**（`lib/wechat.js`）
+  - 会话列表：`sessions --json -n {limit}`
+  - 拉消息：`messages {chat} --json --non-interactive -n {limit} -s {sinceEpoch}`
+  - 自己账号：`config show`（文本行「微信账号: wxid_xxx」）
+  - 自己昵称：`contacts --json -n {limit}` 查自己那一条
+  - 注意 `-s` 吃的是 **Unix 秒**，不是 ISO 字符串。
+- **参数填充 `fill()`**：没有值的可选参数连名带值一起丢掉（没传 since 时 `-s` 必须消失，否则 weflow 会当成 `-s undefined`）。
+- **`run()` 容错**：weflow 失败时 JSON 仍在 stdout、退出码为 1，所以非 0 退出也解析；`ENOENT` 单独标 `missing`，错误提示才说得准。
+- **字段映射 `normalize()`**：`localId` 当消息 id；`senderUsername` 与 `senderDisplay` 分开取（合并会把自己发的消息误判成别人发的）；正文用 `parsedContent` 兜 `rawContent`。
+- **群聊判定**：只认会话 id 的 `@chatroom` 后缀——`type` 字段在 NT / WCDB / 直读 SQLCipher 三个后端语义不一致。
+- **自己身份识别**：`config show` 拿账号 → `contacts` 补昵称；都用不上时从 `isSend: 1` 的消息反推 `selfId`。
+- **Windows 垫片**：`npm -g` 装的 `weflow-cli.cmd` 用 `execFile` 会 ENOENT，新增 `resolveCli()` 从垫片里翻出真正的 JS 入口，用当前 node 执行，不走 shell。
+- **发送能力校正**：weflow-cli 1.21.17 **有** `send <target> <message> --yes`。`sendText()` 改为只有在 `dryRun === false && confirm === true` 时才把 `--yes` 传下去，其余情况一律 `--dry-run`；默认仍是不发。
+- **`self.id` 配置**：`config.json` 可直接手填自己的 wxid，省一次 `config show`；优先级 `config.selfId || cfg.self?.id || (mock ? "wxid_me" : "")`。
+- **发送政策**：`config.send = { allow: false, review: true }` 默认关；`bin/selftest.js` 新增断言逐行扫 `lib/*.js`，确认全仓没有一处调用 `sendText()`。
+- **新增回归** `bin/adaptertest.js`：内置假 CLI，覆盖字段映射、`@chatroom` 判群、since 裁剪、selfId 认领、失败 JSON 透出、缺参裁剪、CLI 缺失、发送三态（默认预览 / 缺 confirm 仍预览 / confirm 才 `--yes`）、白名单拒绝码透出。共 10 组。
+
+### 测试
+
+- `node bin/selftest.js` → 55 项断言通过
+- `node bin/adaptertest.js` → 10 组断言通过（假 CLI，未接触真实微信数据）
+- `node bin/demo.js --mock` → PASS / REPLY / -- 三档正常
+
+### 已知限制
+
+- 真机验证未完成：本机微信 4.2.0.13（weflow 验证过的是 4.1.15.56）。`weflow-cli dbkey` 能抓到 64 位密钥，但该命令只打印不落盘，`init` 也不复用它；`init` 只在「微信未运行时」才等 hook（120 秒），已登录状态下会直接跳过等待，随后内存扫描在 4.2 上匹配不到 `x'<key><salt>'` 特征，最终报「数据库密钥没有就绪」。要真正初始化，需要在微信**未登录**状态下运行 `init` 并完成一次登录事件。
+- 微信没有结构化 `mentions`，@ 判定只能靠正文里的 `@名字`。

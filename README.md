@@ -187,6 +187,16 @@ node bin/demo.js --mock --set chat_li:off        # 只关掉"李娜"这个私聊
 
 寒暄和回执（"早上好"、"好的谢谢"、"收到"）即使闸门是 always 也会被吃掉。
 
+## 发送政策（只读，人工审核）
+
+这个版本**不发消息**，而且不是靠配置关掉的，是代码里没有发送路径：
+
+- `lib/index.js` 只注册 `wechat_duty_scan` 一个工具，扫到的活只落成待办；
+- 全仓没有一处调用 `sendText()` —— `bin/selftest.js` 会逐行扫 `lib/*.js` 把这一点钉死；
+- `sendText()` 默认 `dryRun: true`；`config.send.allow` 默认 `false`，`review: true`。weflow-cli **有** `send <target> <message>`，但目标必须在它的白名单里（否则 `TARGET_NOT_ALLOWED`），并且要 `--dry-run` 之外的 `--yes` 才真发、消息通道得先 `login-wechat`；本适配层只在 `confirm === true` 时才把 `--yes` 传下去。
+
+将来若要放开，口径是「人工确认式」：把 `send.allow` 改成 `true` 也**只代表允许走人工确认**，每次发送必须由人在待办卡片上点一次【确认发送】，接口层再要求 `confirm === true`。轮询、agent、脚本自动触发的发送不在支持范围内。
+
 ## 目录
 
 | 文件 | 作用 | 对应 cyber-im-avatar |
@@ -200,17 +210,43 @@ node bin/demo.js --mock --set chat_li:off        # 只关掉"李娜"这个私聊
 | `lib/mock.js` | 示例数据（编造的） | — |
 | `bin/demo.js` | 命令行 demo | — |
 | `vendor/` | 参考源码，仅用于对照接口 | — |
+| `CHANGELOG.md` | 各版本改了什么 | — |
+
+## 真机接线（weflow-cli）
+
+1. 装：`npm i -g weflow-cli`（写这个文档时是 1.21.17；它要求 Node.js ≥ 22、Python ≥ 3.10）。
+2. 装 Python 依赖：`weflow-cli setup --yes --non-interactive`。**国内网络直连 PyPI 大概率 `ConnectionResetError(10054)`**，给 pip 换个镜像即可：
+
+   ```bash
+   PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+   PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn \
+   weflow-cli setup --yes --non-interactive
+   ```
+
+   venv 建在 `~/.weflow-cli/venv`，之后所有 Python 工作流都优先用它。Windows 上 `sqlcipher3` 会自动换成预编译的 `sqlcipher3-wheels`。
+3. 体检：`weflow-cli check`。除了依赖，它会报微信版本——本机是 **4.2.0.13，比它验证过的 4.1.15.56 新**，读不出数据时先怀疑版本而不是我们的解析。
+4. 初始化：`weflow-cli init -p "<xwechat_files 路径>"`。不带 `--json` 可以直接跑（`--json` 才会要求交互终端）；它从微信进程里抓解密密钥，而 hook **只在登录那一瞬触发**——所以正确姿势是：先退出微信（或让它停在扫码/登录界面），再运行 `init`，然后在 `init` 等待的约 120 秒内启动微信并完成一次登录。
+5. 验证数据：`weflow-cli sessions --json | head`，能出 `success: true` 和会话列表就算通了。读不出来时先 `weflow-cli check --report`，它会明确报是 Python 依赖、密钥还是微信版本的问题。
+6. 跑本适配层：`node bin/demo.js`（去掉 `--mock`）。
+
+Windows 上 `npm -g` 装的其实是 `weflow-cli.cmd` 垫片，`execFile` 直接跑会 ENOENT（表现成「没装」）。`lib/wechat.js` 的 `resolveCli()` 会从垫片里翻出真正的 JS 入口（`node_modules/weflow-cli/cli.cjs`），用当前 node 执行，不走 shell，免得聊天文本里的引号/`&` 被 cmd 吃掉。
 
 ## 已知未验证
 
-1. **本机没装 weflow-cli，也没登录微信**，`wechat.js` 里的命令模板（`sync run <chat> --since <iso> --json`）和字段名都是按 weflow 文档写的，没有真机跑过。字段名用了候选列表兜底，但跑 live 前先人工看一眼原始 JSON。
+1. **命令与字段已对着 weflow-cli@1.21.17 的发布包源码核对过，CLI 与依赖也已在本机装好，但还没 init 成功、没读过一条真实消息**。现在的模板是：
+   - `sessions --json -n 50` → `{ success, sessions: [{ username, displayName, type, summary, lastTimestamp }] }`
+   - `messages <会话> --json --non-interactive -n 30 -s <Unix 秒>` → `{ success, talker, messages: [{ localId, createTime, isSend, senderUsername, parsedContent }] }`。注意 `-s` 吃的是秒，不是 ISO 字符串。
+   - 账号从 `config show` 的文本行「微信账号: wxid_xxx」里抠 —— weflow 没有 `whoami`，而 `config show --json` 恰好把这行脱敏掉。
+   群聊只认会话 id 后缀 `@chatroom`（`type` 字段在 NT / WCDB / 直读 SQLCipher 三个后端语义不一致，不能当准绳）。昵称另走一趟 `contacts --json -n 5000` 查自己那一条（weflow 不给自己昵称，`sessions` 的 `displayName` 都是别人的），查不到就留空并回落到 `self.names`；每个进程只查一次。`bin/adaptertest.js` 用真实 JSON 形状做了解析回归，但它喂的是假 CLI；真机第一次跑请先手动 `weflow-cli sessions --json` 对一眼字段。
+
+   本机 init 实测卡点（微信 4.2.0.13）：`weflow-cli dbkey` 能抓到 64 位密钥（「密钥已捕获」），但该命令只打印不落盘，`init` 也不复用；`init` 只在**微信未运行**时才等 hook（120 秒），已登录状态下直接跳过等待，随后内存扫描在 4.2 上匹配不到 `x'<key><salt>'` 特征，结尾报「初始化未完成：数据库密钥没有就绪」。绕法：退出登录 → 运行 `init` → 在等待窗口内完成登录。
 2. 微信没有 `mentions` 结构化字段，@ 判定只能靠正文里的 `@名字`，改名/备注会漏。
-3. `sendText` 默认 dry-run，不真发；要真发得显式 `{dryRun:false}`，且建议只发到自己的文件传输助手先试。
+3. ~~weflow-cli 没有发送子命令~~ **这条已更正**：装好 1.21.17 后发现它有 `send <target> <message> --yes`（受白名单 + `login-wechat` 限制）。本适配层仍不代发：`sendText` 默认只带 `--dry-run`，必须 `dryRun:false` 且 `confirm === true` 才带 `--yes`，全仓也没有调用方。
 4. weflow 没有稳定游标（README 说还没对外），增量靠「带重叠的时间窗 + 消息 id 去重」，重叠窗口内的重复由 `state.js` 吃掉。
 
 ## 下一步（按性价比）
 
-1. 装 weflow-cli，跑 `weflow-cli sync run <群名> --since <昨天> --json` 看真实 JSON，改字段映射（半小时）。
+1. ~~改字段映射~~ 已做完（对着 weflow-cli@1.21.17：`sessions --json` + `messages --json --non-interactive -s <秒>`，回归在 `bin/adaptertest.js`）。剩下的是真机验证：`weflow-cli init`（交互终端）→ `node bin/demo.js`（不带 `--mock`）看能不能拉到消息。
 2. 把判定接到 DSH 会话：命中就 `ctx.sessionController.create()` 开子会话，首条消息带「来源群 + 原话 + 判定理由」。
 3. 侧边栏面板：列表 + 待办 + 一键派活。
 

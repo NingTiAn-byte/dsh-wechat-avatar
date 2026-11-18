@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { judge } from "../lib/judge.js";
 import { gateOf } from "../lib/policy.js";
 import { WeChatAdapter } from "../lib/wechat.js";
@@ -103,4 +104,14 @@ assert.equal(nextFails(3, true), 0, "成功一轮清零退避");
 assert.equal(nextFails(9, false), DEFAULT_POLL.maxFails, "失败计数封顶");
 assert.equal(describePoll({ sec: 60 }).includes("每 60 秒"), true);
 
-console.log("selftest ok: " + "53 项断言通过");
+// —— 发送政策：只读 + 人工审核。发送不是「默认关」，而是根本没有调用方
+const libDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "lib");
+const sendCallers = fs
+  .readdirSync(libDir)
+  .filter((f) => f.endsWith(".js"))
+  .flatMap((f) => fs.readFileSync(path.join(libDir, f), "utf8").split("\n").filter((l) => /\.sendText\s*\(/.test(l) && !/^\s*(\/\/|\*)/.test(l)));
+assert.deepEqual(sendCallers, [], "lib 里没有任何地方调用 sendText：发送只能由人触发");
+assert.equal((await im.sendText("chat_proj", "hi")).dry_run, true, "默认 dryRun，走不到真发");
+assert.equal((await im.sendText("chat_proj", "hi", { dryRun: false })).dry_run, true, "mock 下连非 dryRun 都不发（真适配器的拒绝在 adaptertest 里测）");
+
+console.log("selftest ok: " + "55 项断言通过");
