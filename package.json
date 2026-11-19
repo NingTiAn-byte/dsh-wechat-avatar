@@ -1,6 +1,6 @@
 {
   "name": "dsh-wechat-avatar",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
   "description": "微信 IM 值守最小 demo：用 weflow-cli 拉群消息，规则判定哪条是派给我的活；左侧栏带管理页",
   "type": "module",

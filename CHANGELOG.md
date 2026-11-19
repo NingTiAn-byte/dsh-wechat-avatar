@@ -1,5 +1,21 @@
 # 更新说明
 
+## v0.3.0 — 真机跑通：第一次读到真实微信消息
+
+这一版没有新概念，就是把「平台层到底能不能用」从猜变成事实：在本机（Windows 11、微信 4.2.0.13、weflow-cli 1.21.17、Node 24）完整跑通了一轮。
+
+- 密钥怎么拿的：微信 4.2 自动登录只给 3–5 秒窗口，`weflow-cli init` 自己的 hook 抢不到；`dbkey` 抢到了却不落盘。解法是先起一个常驻捕获（新增 `bin/getkey.mjs`），贴住微信进程之后再启动微信登录，拿到 64 位 key 后直接 `weflow-cli init --passphrase <key>`。
+- 真实数据量：`sessions` 206 个会话、`contacts` 963 个联系人；三个库（聊天/联系人/朋友圈）派生密钥全部「已验证」。
+- 判定在真实数据上正常：私聊里「收到，我先沟通下。然后下午说的新增的功能，12 月没问题……」判成 PASS（期限=下午）；自己发的消息被 `isSend` 正确排除。
+- `scanOnce()` 跑 50 个会话 → 绑定的工作区落 9 条任务，同 msg_id 不重复。
+- 已知缺口：weflow 不提供自己的昵称（`config show` 没有、`contacts` 不含自己），`self_name` 留空，称呼走 `config.json` 的 `self.names`。
+
+其它：
+
+- `config.json` 不再进版本库（真实会话 id / 群名 / 待办留在本地），仓库里放 `config.example.json`；缺文件时自动用内置默认值。
+- README 的「真机接线」第 4 步重写成上面这套流程，「已知未验证」升级为「真机验证记录」。
+- `bin/getkey.mjs` 通过 `npm root -g` 找 weflow-cli 的 `keyService.js`，也可用 `WEFLOW_KEY_SERVICE` 指路。
+
 ## v0.2.2 — 任务可以「交给 DSH」了
 
 任务行多了一个按钮：点它 → 新建一个 DSH 会话 → 把这条待办作为一条普通用户消息投给 agent，任务状态自动切到「进行中」。会话出现在左侧会话列表里，点进去就能接着干。

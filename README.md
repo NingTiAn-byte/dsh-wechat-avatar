@@ -12,7 +12,7 @@ node bin/demo.js               # live：调本机 weflow-cli 拉真实群消息
 输出三档：`PASS`（这条是派给我的活）、`REPLY`（有人在等我回话）、`--`（无关）。
 
 ```bash
-node bin/selftest.js           # 12 条断言，改规则后先跑
+node bin/selftest.js           # 55 条断言，改规则后先跑
 ```
 
 本机实测（2026-11-17，示例数据）：
@@ -33,7 +33,7 @@ node bin/selftest.js           # 12 条断言，改规则后先跑
 
 第二次跑：`新增 0 条`，去重生效。
 
-> 本机 PATH 里没有 node，用 DSH 自带的：`resources/runtime/primary-runtime/dependencies/node/bin/node.exe`。
+> 需要 Node.js ≥ 22（weflow-cli 的运行时要求）。本机装的是 v24，PATH 里能直接跑；没有的话用 DSH 自带的：`resources/runtime/primary-runtime/dependencies/node/bin/node.exe`。
 
 判定完全靠规则（`lib/judge.js`）：被 @ / 直接称「你」/ 派活动词 / 期限词 / 疑问句加权，阈值 0.6。
 **先规则后模型**——误判的代价是替你答应了一件你没答应的事。
@@ -211,6 +211,7 @@ node bin/demo.js --mock --set chat_li:off        # 只关掉"李娜"这个私聊
 | `lib/index.js` | DSH 插件入口：注册 `wechat_duty_scan` 工具 | `lib/index.js` |
 | `lib/mock.js` | 示例数据（编造的） | — |
 | `bin/demo.js` | 命令行 demo | — |
+| `bin/getkey.mjs` | 抓微信 4.x 数据库密钥（init 用） | — |
 | `vendor/` | 参考源码，仅用于对照接口 | — |
 | `CHANGELOG.md` | 各版本改了什么 | — |
 
@@ -227,29 +228,53 @@ node bin/demo.js --mock --set chat_li:off        # 只关掉"李娜"这个私聊
 
    venv 建在 `~/.weflow-cli/venv`，之后所有 Python 工作流都优先用它。Windows 上 `sqlcipher3` 会自动换成预编译的 `sqlcipher3-wheels`。
 3. 体检：`weflow-cli check`。除了依赖，它会报微信版本——本机是 **4.2.0.13，比它验证过的 4.1.15.56 新**，读不出数据时先怀疑版本而不是我们的解析。
-4. 初始化：`weflow-cli init -p "<xwechat_files 路径>"`。不带 `--json` 可以直接跑（`--json` 才会要求交互终端）；它从微信进程里抓解密密钥，而 hook **只在登录那一瞬触发**——所以正确姿势是：先退出微信（或让它停在扫码/登录界面），再运行 `init`，然后在 `init` 等待的约 120 秒内启动微信并完成一次登录。
+4. 初始化。**这条是本项目在真机上踩过最多坑的一步**，微信 4.2 的自动登录只给几秒窗口，靠 `init` 自己等待几乎抢不到，所以要先把 hook 挂上再启动微信：
+
+   ```bash
+   # ① 先关掉微信
+   # ② 起捕获脚本（它会一直轮询，微信一出现就贴 hook）
+   node bin/getkey.mjs
+   # ③ 打开微信并完成登录，脚本会打印 KEY=<64 位 hex> 并写入 _key.txt
+   # ④ 用这串 key 直接初始化，跳过它自己的抓取
+   weflow-cli init --passphrase <key> -p "C:\Users\<你>\AppData\Roaming\wechat\xwechat_files"
+   ```
+
+   为什么不用 `weflow-cli init` 直接抓：微信已在运行时它不等待登录事件（`init` 只在微信未运行时才 `waitForKey(120s)`），而 4.2 的自动登录只要 3–5 秒，等 `init` 起来早就过点了。为什么不用 `weflow-cli dbkey`：它能抓到 key 但只打印「密钥已捕获，未显示」，不落盘，`init` 也不复用。
+   `-p` 指到 `xwechat_files` 根目录即可，`init` 会自己找 `wxid_xxx/db_storage`。
 5. 验证数据：`weflow-cli sessions --json | head`，能出 `success: true` 和会话列表就算通了。读不出来时先 `weflow-cli check --report`，它会明确报是 Python 依赖、密钥还是微信版本的问题。
 6. 跑本适配层：`node bin/demo.js`（去掉 `--mock`）。
 
 Windows 上 `npm -g` 装的其实是 `weflow-cli.cmd` 垫片，`execFile` 直接跑会 ENOENT（表现成「没装」）。`lib/wechat.js` 的 `resolveCli()` 会从垫片里翻出真正的 JS 入口（`node_modules/weflow-cli/cli.cjs`），用当前 node 执行，不走 shell，免得聊天文本里的引号/`&` 被 cmd 吃掉。
 
+## 真机验证记录
+
+2026-11-19 在本机跑通（Windows 11、微信 4.2.0.13、weflow-cli 1.21.17、Node 24）：
+
+- `weflow-cli init --passphrase <key>` → 聊天 / 联系人 / 朋友圈三个库的派生密钥全部「已验证」，NT 库落在 `xwechat_files\<wxid>\db_storage\message\message_0.db`。
+- `weflow-cli sessions --json -n 10` → `success: true`，206 个会话；`contacts --json -n 5000` → 963 个联系人。
+- `node bin/demo.js`（live）→ 真实群聊 / 私聊各拉 50 条，判定正常：私聊里「收到，我先沟通下。然后下午说的新增的功能，12 月没问题……」判成 PASS（期限=下午），自己发的消息被 `isSend` 正确排除。
+- `scanOnce()` → 对 206 个会话里的前 50 个跑一轮，绑定的工作区落 9 条任务（同 msg_id 不重复）。
+- `weflow-cli config show` 里没有昵称、`contacts` 也不含自己 → `self_name` 留空属于预期，称呼请写 `config.json` 的 `self.names`（本机填的是本人常用称呼）。
+
+`config.json` 现在**不进版本库**（`.gitignore` 里有），里面是真实会话 id、群名和待办；首次运行缺文件时自动用内置默认值，想从模板起就跑 `cp config.example.json config.json`。
+
 ## 已知未验证
 
-1. **命令与字段已对着 weflow-cli@1.21.17 的发布包源码核对过，CLI 与依赖也已在本机装好，但还没 init 成功、没读过一条真实消息**。现在的模板是：
+1. **命令与字段已对着 weflow-cli@1.21.17 的发布包源码核对过，并已真机跑通（见上节）**。现在的模板是：
    - `sessions --json -n 50` → `{ success, sessions: [{ username, displayName, type, summary, lastTimestamp }] }`
    - `messages <会话> --json --non-interactive -n 30 -s <Unix 秒>` → `{ success, talker, messages: [{ localId, createTime, isSend, senderUsername, parsedContent }] }`。注意 `-s` 吃的是秒，不是 ISO 字符串。
    - 账号从 `config show` 的文本行「微信账号: wxid_xxx」里抠 —— weflow 没有 `whoami`，而 `config show --json` 恰好把这行脱敏掉。
    群聊只认会话 id 后缀 `@chatroom`（`type` 字段在 NT / WCDB / 直读 SQLCipher 三个后端语义不一致，不能当准绳）。昵称另走一趟 `contacts --json -n 5000` 查自己那一条（weflow 不给自己昵称，`sessions` 的 `displayName` 都是别人的），查不到就留空并回落到 `self.names`；每个进程只查一次。`bin/adaptertest.js` 用真实 JSON 形状做了解析回归，但它喂的是假 CLI；真机第一次跑请先手动 `weflow-cli sessions --json` 对一眼字段。
 
-   本机 init 实测卡点（微信 4.2.0.13）：`weflow-cli dbkey` 能抓到 64 位密钥（「密钥已捕获」），但该命令只打印不落盘，`init` 也不复用；`init` 只在**微信未运行**时才等 hook（120 秒），已登录状态下直接跳过等待，随后内存扫描在 4.2 上匹配不到 `x'<key><salt>'` 特征，结尾报「初始化未完成：数据库密钥没有就绪」。绕法：退出登录 → 运行 `init` → 在等待窗口内完成登录。
+   本机 init 的坑（微信 4.2.0.13）：`weflow-cli dbkey` 能抓到 64 位密钥（「密钥已捕获」），但只打印不落盘，`init` 也不复用；`init` 又只在**微信未运行**时才等 hook（120 秒），已登录状态下直接跳过等待，然后在 4.2 上匹配不到 `x'<key><salt>'` 特征，结尾报「初始化未完成：数据库密钥没有就绪」。所以走 `bin/getkey.mjs` 先挂 hook、登录后再用 `init --passphrase <key>`（见「真机接线」第 4 步）。
 2. 微信没有 `mentions` 结构化字段，@ 判定只能靠正文里的 `@名字`，改名/备注会漏。
 3. ~~weflow-cli 没有发送子命令~~ **这条已更正**：装好 1.21.17 后发现它有 `send <target> <message> --yes`（受白名单 + `login-wechat` 限制）。本适配层仍不代发：`sendText` 默认只带 `--dry-run`，必须 `dryRun:false` 且 `confirm === true` 才带 `--yes`，全仓也没有调用方。
 4. weflow 没有稳定游标（README 说还没对外），增量靠「带重叠的时间窗 + 消息 id 去重」，重叠窗口内的重复由 `state.js` 吃掉。
 
 ## 下一步（按性价比）
 
-1. ~~改字段映射~~ 已做完（对着 weflow-cli@1.21.17：`sessions --json` + `messages --json --non-interactive -s <秒>`，回归在 `bin/adaptertest.js`）。剩下的是真机验证：`weflow-cli init`（交互终端）→ `node bin/demo.js`（不带 `--mock`）看能不能拉到消息。
-2. 把判定接到 DSH 会话：命中就 `ctx.sessionController.create()` 开子会话，首条消息带「来源群 + 原话 + 判定理由」。
+1. ~~改字段映射 + 真机验证~~ 都已完成（见「真机验证记录」）。接下来是把 206 个会话的轮询成本压下来：现在每轮 `sessions -n 50` + 逐会话 `messages`，会话一多就是几十个子进程，可以按「有未读 / 最近活跃」先筛。
+2. 把判定接到 DSH 会话：命中就 `ctx.sessionController.create()` 开子会话，首条消息带「来源群 + 原话 + 判定理由」（`lib/handoff.js` 已经有「交给 DSH」的人工版本）。
 3. 侧边栏面板：列表 + 待办 + 一键派活。
 
 ## 装进 DSH

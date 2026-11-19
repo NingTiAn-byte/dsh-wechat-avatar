@@ -1,9 +1,7 @@
 {
   "self": {
     "id": "",
-    "names": [
-      "子同"
-    ],
+    "names": [],
     "byChat": {}
   },
   "policy": {
@@ -21,12 +19,5 @@
     "allow": false,
     "review": true
   },
-  "workspaces": [
-    {
-      "id": "ws_新工作区_0cc8",
-      "name": "新工作区",
-      "chats": [],
-      "tasks": []
-    }
-  ]
+  "workspaces": []
 }
