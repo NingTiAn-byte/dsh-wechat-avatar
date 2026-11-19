@@ -12,7 +12,7 @@ node bin/demo.js               # live：调本机 weflow-cli 拉真实群消息
 输出三档：`PASS`（这条是派给我的活）、`REPLY`（有人在等我回话）、`--`（无关）。
 
 ```bash
-node bin/selftest.js           # 55 条断言，改规则后先跑
+node bin/selftest.js           # 59 条断言，改规则后先跑
 ```
 
 本机实测（2026-11-17，示例数据）：
@@ -49,6 +49,7 @@ node bin/selftest.js           # 55 条断言，改规则后先跑
 - 为什么是 60 秒：weflow 读的是本地 SQLCipher 库，一次查询毫秒级，60 秒对磁盘和 CPU 无感；再快没意义（没人指望 5 秒内被派活），再慢就"群里等十分钟没人应"。
 - **抖动 ±15%**：不整点轮询，避免和其他定时任务撞车。
 - **失败退避**：连续失败按 2^n 拉长——1 次 2 分钟、3 次 8 分钟、封顶 10 分钟；成功一轮立刻回到 60 秒。
+- **只扫指定的群**：`config.watch` 非空时，先按它过滤会话列表（`chat_id` 或群名都认），剩下的才逐个拉消息；空数组 = 全部。会话一多，这是最直接的省法。
 - `sec: 0` 关掉自动轮询，只保留手动 `wechat_duty_scan`。
 - 间隔下限 20 秒，防止把 CLI 打爆。
 
@@ -59,15 +60,17 @@ node bin/selftest.js           # 55 条断言，改规则后先跑
 装进 DSH 后，左侧栏会多一个「微信值守」入口，点开就是一页配置界面：
 
 - **全局称呼**：一行逗号分隔，所有会话通用。
-- **每个群怎么叫我**：按会话列出来，每行一个输入框；会话列表来自上一轮扫描（`state.chat_list`），不用手抄 chat_id。
+- **每个群怎么叫我**：只列已经设置过的群；想加一个群就在底部搜索框里挑一个（点开就是完整会话列表，打字只做过滤），选中后才出现输入框；行尾 `×` 取消这个群的单独称呼。
+- **监听范围**：决定这一轮去读哪些会话。空 = 全部；非空 = 只扫选中的群和私聊。下面一行是「最近扫描到 N 个会话 · 时间」，读失败会直接显示原因。
 - **什么才算派活**：私聊 / 群聊三态切换、「喊昵称算不算」开关、轮询间隔。
-- **保存**立即写回 [config.json](config.json)，下一轮轮询（≤ 间隔秒）生效；「重新读取」重新拉配置。
+- **改完自动保存**：改动 600 毫秒后自动落盘，下一轮轮询（≤ 间隔秒）生效；「保存」可以立刻写，「重新读取」重新拉配置。
+- **立即扫描一次**：不等轮询，马上按当前监听范围跑一轮，回显「扫了 N 个会话 / 派给我的活 X 条 / 新落盘 Y 条任务」。
 
 ### 工作区与任务
 
 管理页最后一块是「工作区与任务」。一个工作区 = 一组会话 + 一批任务。
 
-- **绑定**：把群 chat_id 或群名填进「绑定会话」（逗号分隔）。绑定之后，这个群里判定为「派给我的活」的消息会**自动变成工作区里的一条待办**，带上来源群、期限、置信度。
+- **绑定**：点开「绑定会话」的下拉，从已扫描到的会话里挑（点开就是完整列表，打字只做过滤），选中即加入；已绑定的显示成带 `×` 的标签。绑定之后，这个群里判定为「派给我的活」的消息会**自动变成工作区里的一条待办**，带上来源群、期限、置信度。
 - **去重**：同一条消息（msg_id）只进一次；第二轮扫描没有新消息就不会重复记。
 - **手工**：输入框回车加一条任务；○/✓ 切换完成；× 删除。改完立即落盘，不用等「保存」。
 - **交给 DSH**：任务右边的按钮会新开一个 DSH 会话，把任务（标题、来源群、是谁说的、期限）作为普通用户消息投给 agent，任务状态自动变「进行中」。消息里明确要求「先给方案、等我确认再动手」，所以它不会拿着微信里的原文直接改你的文件——群里任何人都能往这个通道塞文字，当成需求描述可以，当成指令不行。
@@ -77,6 +80,7 @@ node bin/selftest.js           # 55 条断言，改规则后先跑
   - `POST /dsh-wechat-avatar/api/workspace` → `{action: "add"|"update"|"remove", id, name, chats}`
   - `POST /dsh-wechat-avatar/api/task` → `{action: "add"|"status"|"remove", wsId, taskId, title, status}`
   - `POST /dsh-wechat-avatar/api/handoff` → `{wsId, taskId}`，新建会话并把任务投给 agent；返回 `sessionId`。部署里没有 `sessionController` 时回 501，客户端会提示。
+  - `POST /dsh-wechat-avatar/api/scan` → 立刻按当前监听范围扫一轮，返回 `{ok, filed, scanned_at, chats: [...]}`，每条带 `fetched / fresh / assigned / error`。
 
 扫描时宿主半（[lib/index.js](dsh-wechat-avatar/lib/index.js)）用 `workspaceFor()` 按 chat_id **或群名**匹配工作区，命中才记任务；没绑定任何工作区的群照常判定，只是不落任务。
 
@@ -91,7 +95,7 @@ dsh plugin --profile desktop add link:D:/项目/dsh-wechat-avatar
 ### 实现方式（改代码时看这里）
 
 - 宿主半 [lib/index.js](dsh-wechat-avatar/lib/index.js) 用 `ctx.inject(["webServer"], ...)` 注册前缀路由 `/dsh-wechat-avatar`，处理函数在 [lib/api.js](dsh-wechat-avatar/lib/api.js)：
-  - `GET /dsh-wechat-avatar/api/config` → `{ config, chats, who }`
+  - `GET /dsh-wechat-avatar/api/config` → `{ config, chats, who, scan_error }`
   - `POST /dsh-wechat-avatar/api/config` → 只接受白名单字段，越界丢弃，深合并后落盘
   - 仅回环地址 + 同源 Origin 可访问
 - 浏览器半 [lib/client.js](dsh-wechat-avatar/lib/client.js) 用 `ctx.slots.register` 注册两处：
@@ -212,6 +216,7 @@ node bin/demo.js --mock --set chat_li:off        # 只关掉"李娜"这个私聊
 | `lib/mock.js` | 示例数据（编造的） | — |
 | `bin/demo.js` | 命令行 demo | — |
 | `bin/getkey.mjs` | 抓微信 4.x 数据库密钥（init 用） | — |
+| `bin/fillchats.mjs` | 把当前会话列表写进 `state/state.json`（面板下拉为空时救急） | — |
 | `vendor/` | 参考源码，仅用于对照接口 | — |
 | `CHANGELOG.md` | 各版本改了什么 | — |
 
@@ -274,6 +279,7 @@ Windows 上 `npm -g` 装的其实是 `weflow-cli.cmd` 垫片，`execFile` 直接
 ## 下一步（按性价比）
 
 1. ~~改字段映射 + 真机验证~~ 都已完成（见「真机验证记录」）。接下来是把 206 个会话的轮询成本压下来：现在每轮 `sessions -n 50` + 逐会话 `messages`，会话一多就是几十个子进程，可以按「有未读 / 最近活跃」先筛。
+   另：宿主进程里执行 weflow-cli 偶发失败（面板会显示 `scan_error`），同一条命令在命令行里却正常，原因待查；`bin/fillchats.mjs` 可以先把会话列表灌进 `state` 救急。
 2. 把判定接到 DSH 会话：命中就 `ctx.sessionController.create()` 开子会话，首条消息带「来源群 + 原话 + 判定理由」（`lib/handoff.js` 已经有「交给 DSH」的人工版本）。
 3. 侧边栏面板：列表 + 待办 + 一键派活。
 

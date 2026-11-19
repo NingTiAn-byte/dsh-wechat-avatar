@@ -12,6 +12,7 @@ import { loadState, takeFresh } from "../lib/state.js";
 import { nextDelay, nextFails, describePoll, DEFAULT_POLL } from "../lib/schedule.js";
 import { namesForChat, usableNames } from "../lib/names.js";
 import { sanitizePatch, mergePatch } from "../lib/api.js";
+import { DEFAULT_CONFIG } from "../lib/config.js";
 
 const im = new WeChatAdapter({ mock: true, selfId: "wxid_me", selfNames: ["李雷", "雷哥"] });
 const who = await im.whoami();
@@ -90,6 +91,12 @@ assert.deepEqual(sanitizePatch({ poll: { sec: 9999 } }).poll.sec, 3600, "轮询�
 assert.deepEqual(sanitizePatch({ self: { byChat: { chat_x: ["老王"] } } }).self.byChat, { chat_x: ["老王"] }, "按群称呼能落库");
 assert.equal(mergePatch({ policy: { dm: "always", group: "mention_only" } }, sanitizePatch({ policy: {} })).policy.dm, "always", "空补丁不动原有值");
 
+// —— 监听范围：空数组 = 全部；非空 = 只扫这些
+assert.deepEqual(sanitizePatch({ watch: [" 58831004714@chatroom ", "58831004714@chatroom", ""] }).watch, ["58831004714@chatroom"], "监听范围去空去重");
+assert.deepEqual(sanitizePatch({ watch: [] }).watch, [], "空数组=全部会话，也要能落库");
+assert.deepEqual(mergePatch({ watch: ["a"] }, sanitizePatch({ watch: ["b", "c"] })).watch, ["b", "c"], "监听范围整表替换");
+assert.deepEqual(DEFAULT_CONFIG.watch, [], "默认监听全部会话");
+
 // —— 监听节奏
 const fixed = () => 0.5; // 抖动归零
 assert.equal(nextDelay(0, { ...DEFAULT_POLL }, fixed), 60000, "默认 60 秒一轮");
@@ -114,4 +121,4 @@ assert.deepEqual(sendCallers, [], "lib 里没有任何地方调用 sendText：�
 assert.equal((await im.sendText("chat_proj", "hi")).dry_run, true, "默认 dryRun，走不到真发");
 assert.equal((await im.sendText("chat_proj", "hi", { dryRun: false })).dry_run, true, "mock 下连非 dryRun 都不发（真适配器的拒绝在 adaptertest 里测）");
 
-console.log("selftest ok: " + "55 项断言通过");
+console.log("selftest ok: " + "59 项断言通过");
