@@ -1,6 +1,6 @@
 {
   "name": "dsh-wechat-avatar",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "private": true,
   "description": "微信 IM 值守最小 demo：用 weflow-cli 拉群消息，规则判定哪条是派给我的活；左侧栏带管理页",
   "type": "module",
@@ -18,7 +18,9 @@
     "config.json",
     "README.md"
   ],
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
     "demo": "node bin/demo.js --mock",
     "demo:live": "node bin/demo.js",
@@ -26,11 +28,15 @@
   },
   "dsh": {
     "manifestVersion": 1,
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-sidebar"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
     }
   }
 }

@@ -1,10 +1,10 @@
 {
   "self": {
-    "names": ["李雷"],
-    "byChat": {
-      "chat_proj": ["雷哥"],
-      "chat_ops": ["老李"]
-    }
+    "id": "",
+    "names": [
+      "子同"
+    ],
+    "byChat": {}
   },
   "policy": {
     "dm": "always",
@@ -16,5 +16,17 @@
     "sec": 60,
     "jitter": 0.15,
     "backoff_max_sec": 600
-  }
+  },
+  "send": {
+    "allow": false,
+    "review": true
+  },
+  "workspaces": [
+    {
+      "id": "ws_新工作区_0cc8",
+      "name": "新工作区",
+      "chats": [],
+      "tasks": []
+    }
+  ]
 }

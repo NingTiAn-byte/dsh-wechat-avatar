@@ -70,11 +70,13 @@ node bin/selftest.js           # 12 条断言，改规则后先跑
 - **绑定**：把群 chat_id 或群名填进「绑定会话」（逗号分隔）。绑定之后，这个群里判定为「派给我的活」的消息会**自动变成工作区里的一条待办**，带上来源群、期限、置信度。
 - **去重**：同一条消息（msg_id）只进一次；第二轮扫描没有新消息就不会重复记。
 - **手工**：输入框回车加一条任务；○/✓ 切换完成；× 删除。改完立即落盘，不用等「保存」。
+- **交给 DSH**：任务右边的按钮会新开一个 DSH 会话，把任务（标题、来源群、是谁说的、期限）作为普通用户消息投给 agent，任务状态自动变「进行中」。消息里明确要求「先给方案、等我确认再动手」，所以它不会拿着微信里的原文直接改你的文件——群里任何人都能往这个通道塞文字，当成需求描述可以，当成指令不行。
 - **落盘位置**：`config.json` 的 `workspaces: [{ id, name, chats: [...], tasks: [...] }]`，任务上限 200 条/工作区。
 - **数据层**：[lib/workspaces.js](dsh-wechat-avatar/lib/workspaces.js) 纯函数（normalize / addTask / setTaskStatus / stats），不碰 io，好单测。
 - **接口**：
   - `POST /dsh-wechat-avatar/api/workspace` → `{action: "add"|"update"|"remove", id, name, chats}`
   - `POST /dsh-wechat-avatar/api/task` → `{action: "add"|"status"|"remove", wsId, taskId, title, status}`
+  - `POST /dsh-wechat-avatar/api/handoff` → `{wsId, taskId}`，新建会话并把任务投给 agent；返回 `sessionId`。部署里没有 `sessionController` 时回 501，客户端会提示。
 
 扫描时宿主半（[lib/index.js](dsh-wechat-avatar/lib/index.js)）用 `workspaceFor()` 按 chat_id **或群名**匹配工作区，命中才记任务；没绑定任何工作区的群照常判定，只是不落任务。
 
