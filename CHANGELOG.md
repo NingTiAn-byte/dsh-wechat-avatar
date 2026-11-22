@@ -1,11 +1,22 @@
 # 更新说明
 
+## v0.8.0 — AI 复核：规则判不出来的时候，让 agent 看上下文
+
+- 新增配置 `ai: { enabled: false, perRound: 8 }`；面板「什么才算派活」里多一个「AI 复核」开关，默认关。
+- 打开后，规则判出来的每条新任务会连同**前后最多 12 条对话**打包成一条纯文本 prompt，投给 DSH 里一个专用会话（`state.ai.session`，没有就自动开一个），让它回一段 JSON：`[{id, is_work, title, deadline, confidence, reason}]`。
+- 它说「不是活」的任务直接从任务组里删掉，并在 `state.ai.dismissed` 留档（最多 50 条）；说「是活」的补一个 `task.ai` 标记（面板任务行显示「AI：是活」，title 上有理由），顺便补期限、抬置信度。
+- 复核是异步的、不挡扫描：一批最多 8 条（`ai.perRound`），一分钟后没回就放弃并写 `state.ai.last_error`；失败不影响规则结果，面板会显示「上次 AI 复核出错：…」。
+- `GET /api/config` 多返回一个 `ai`（含 `last_error`、`pending` 条数）。
+- 断言：selftest 94 项（新增 15 条覆盖 transcriptOf / entryOf / buildPrompt / parseVerdicts 与默认关）、handofftest 16 组、adaptertest 10 组。
+
 ## v0.7.0 — 自动归组：不用再手工绑定会话
 
 - 扫到「派给我的活」、而会话还没有归属时，按群名/昵称自动建任务组并归入（`ensureGroup`），同名组复用，一个会话只归第一个命中的组。
 - 新增配置 `group_auto`（默认 true）、`default_dsh_workspace` / `default_dsh_workspace_path`：新建组继承默认 DSH 工作区。
 - 面板新增「自动归组」卡片（开关 + 默认 DSH 工作区下拉）；任务组里的「绑定会话」下拉改成只读的「归入的会话」列表。
 - 扫描结果新增 `groups_created`。
+- 下拉里可以直接新建 DSH 工作区：填一个已存在的目录，点「新建为 DSH 工作区」，走页面上的 `workspaces.create({path})`（和左侧栏新建是同一个注册表），建完会自动出现在左侧栏和下拉里并立刻绑定；不想注册工作区时用「直接用它」，只把目录当工作目录。
+- 「默认 DSH 工作区」下拉原来读前端内存里的工作区服务，经常是空列表；改成由宿主读 `workspaceRegistry`，走 `GET /api/dshws` 返回 `{workspaceId, title, path}`，读不到时把原因显示在卡片上。
 - 断言：selftest 75 项、handofftest 16 组、adaptertest 10 组。
 
 ## v0.6.0 — 每个群一个会话、按群名分目录

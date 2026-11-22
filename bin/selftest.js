@@ -10,6 +10,14 @@ import { gateOf } from "../lib/policy.js";
 import { WeChatAdapter } from "../lib/wechat.js";
 import { loadState, takeFresh, getChatSession, setChatSession, dropChatSession } from "../lib/state.js";
 import { nextDelay, nextFails, describePoll, DEFAULT_POLL } from "../lib/schedule.js";
+
+// 断言条数自动统计，别手写数字（70→75 这种改一次忘一次）
+let nAssert = 0;
+for (const k of ["ok", "equal", "notEqual", "deepEqual", "notDeepEqual", "match", "doesNotMatch", "throws", "fail"]) {
+  const fn = assert[k];
+  if (typeof fn !== "function") continue;
+  assert[k] = (...args) => { nAssert += 1; return fn(...args); };
+}
 import { namesForChat, usableNames } from "../lib/names.js";
 import { sanitizePatch, mergePatch } from "../lib/api.js";
 import { DEFAULT_CONFIG } from "../lib/config.js";
@@ -46,6 +54,8 @@ assert.equal(judge(gm.p6, opt("chat_proj", gGate)).assigned, false, "群里没@�
 assert.equal(judge(gm.p3, opt("chat_proj", gGate)).assigned, false, "没点名的提问不算");
 assert.equal(judge(gm.p1, opt("chat_proj", gGate)).assigned, false, "寒暄不算");
 assert.equal(judge(gm.p4, opt("chat_proj", gGate)).assigned, false, "自己发的忽略");
+assert.equal(judge({ ...gm.p1, is_self: true }, { ...opt("chat_proj", gGate), selfId: "" }).assigned, false, "isSend=1 的消息即使没拿到 selfId 也算自己发的");
+assert.equal(judge({ ...gm.p1, is_self: true }, opt("chat_proj", gGate)).reason, "自己发的", "排除原因要写清楚");
 
 // —— 昵称：群里不 @，直接喊名字也算叫我
 assert.equal(judge(gm.p8, opt("chat_proj", gGate)).assigned, true, "群里直接喊昵称也算派活");
@@ -164,4 +174,36 @@ const g4 = ensureGroup(gList, { chat_id: "777@chatroom", name: "客户A" }, {});
 assert.equal(g4.created, true, "不同会话各建各的组");
 assert.equal(gList.length, 2);
 
-console.log("selftest ok: " + "75 项断言通过");
+// ---- AI 复核（lib/ai.js）----
+{
+  const { transcriptOf, entryOf, buildPrompt, parseVerdicts } = await import("../lib/ai.js");
+  const msgs = [
+    { id: "m1", sender_name: "张三", content: "帮我把周报改一下，明天要", create_time: 1700000000 },
+    { id: "m2", sender_name: "我", content: "好的", create_time: 1700000100, is_self: true },
+  ];
+  const tr = transcriptOf(msgs, "wxid_me", { name: "张三", kind: "dm" }, 12);
+  assert.equal(tr.rows.length, 2, "上下文两行");
+  assert.ok(tr.rows[0].includes("张三") && tr.rows[0].includes("周报"), "第一行带发送人和内容");
+  assert.ok(tr.rows[1].includes("我"), "自己发的显示成 我");
+  const e = entryOf("c_1", msgs[0], { name: "张三", kind: "dm" }, tr, "t_1");
+  assert.equal(e.task_id, "t_1", "entry 带 task_id");
+  assert.ok(e.transcript && e.transcript.rows.length === 2, "entry 带上下文");
+  const pr = buildPrompt([e], { selfName: "我", selfId: "wxid_me" });
+  assert.ok(pr.includes("张三") && pr.includes("周报"), "prompt 里有原话");
+  assert.ok(pr.includes("is_work"), "prompt 要求 is_work 字段");
+  const ok1 = parseVerdicts('[{"id":"c_1","is_work":true,"title":"改周报","confidence":1.4,"reason":"明确派活"}]');
+  assert.equal(ok1.ok, true);
+  assert.equal(ok1.items[0].is_work, true);
+  assert.equal(ok1.items[0].confidence, 1, "置信度夹到 1");
+  const fenced = "这是结果：\n```json\n[{\"id\":\"c_2\",\"is_work\":false,\"reason\":\"闲聊\"}]\n```";
+  const ok2 = parseVerdicts(fenced);
+  assert.equal(ok2.ok, true, "带代码块也能解析");
+  assert.equal(ok2.items[0].is_work, false);
+  const bad = parseVerdicts("我看不出来");
+  assert.equal(bad.ok, false, "没有数组就报错");
+  assert.ok(bad.error, "报错带原因");
+  const cfgDef = (await import("../lib/config.js")).DEFAULT_CONFIG;
+  assert.equal(cfgDef.ai.enabled, false, "AI 复核默认关");
+}
+
+console.log("selftest ok: " + nAssert + " 项断言通过");
