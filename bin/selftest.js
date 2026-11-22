@@ -8,11 +8,14 @@ import { fileURLToPath } from "node:url";
 import { judge } from "../lib/judge.js";
 import { gateOf } from "../lib/policy.js";
 import { WeChatAdapter } from "../lib/wechat.js";
-import { loadState, takeFresh } from "../lib/state.js";
+import { loadState, takeFresh, getChatSession, setChatSession, dropChatSession } from "../lib/state.js";
 import { nextDelay, nextFails, describePoll, DEFAULT_POLL } from "../lib/schedule.js";
 import { namesForChat, usableNames } from "../lib/names.js";
 import { sanitizePatch, mergePatch } from "../lib/api.js";
 import { DEFAULT_CONFIG } from "../lib/config.js";
+import { ensureGroup } from "../lib/workspaces.js";
+import { sessionCwd } from "../lib/handoff.js";
+import { normalizeTask, normalizeWorkspaces, updateWorkspace } from "../lib/workspaces.js";
 
 const im = new WeChatAdapter({ mock: true, selfId: "wxid_me", selfNames: ["李雷", "雷哥"] });
 const who = await im.whoami();
@@ -121,4 +124,44 @@ assert.deepEqual(sendCallers, [], "lib 里没有任何地方调用 sendText：�
 assert.equal((await im.sendText("chat_proj", "hi")).dry_run, true, "默认 dryRun，走不到真发");
 assert.equal((await im.sendText("chat_proj", "hi", { dryRun: false })).dry_run, true, "mock 下连非 dryRun 都不发（真适配器的拒绝在 adaptertest 里测）");
 
-console.log("selftest ok: " + "59 项断言通过");
+// —— 交给 DSH：默认不自动交，回执字段要能过 normalizeTask（否则存盘就丢）
+assert.equal(DEFAULT_CONFIG.handoff.auto, false, "自动交付默认关");
+assert.deepEqual(sanitizePatch({ handoff: { auto: true } }), { handoff: { auto: true } }, "自动交付开关能落库");
+assert.deepEqual(mergePatch({ handoff: { maxPerScan: 3 } }, sanitizePatch({ handoff: { auto: true } })).handoff, { maxPerScan: 3, auto: true }, "开关与上限合并");
+const keptTask = normalizeTask({ title: "x", session_id: "session-1", reply: "做完了" });
+assert.equal(keptTask.session_id + "|" + keptTask.reply, "session-1|做完了", "会话 id 与回执能存进任务");
+
+// —— 工作区可以绑到用户已有的 DSH 工作区，交给 DSH 的会话就建在里面
+const wsList = normalizeWorkspaces([{ name: "项目A", chats: ["a"], dsh_workspace: "ws-123", tasks: [] }]);
+assert.equal(wsList[0].dsh_workspace, "ws-123", "DSH 工作区 id 能存进插件工作区");
+assert.equal(updateWorkspace(wsList, wsList[0].id, { dsh_workspace: "ws-456" }).dsh_workspace, "ws-456", "绑定的 DSH 工作区能改");
+
+// —— 每个群一个会话 + 按群名分子目录
+const sessState = { sessions: {} };
+setChatSession(sessState, "4521@chatroom", { session_id: "s-1", cwd: "C:\\wx\\测试群" });
+assert.equal(getChatSession(sessState, "4521@chatroom").session_id, "s-1", "群能记住自己的会话");
+dropChatSession(sessState, "4521@chatroom");
+assert.equal(getChatSession(sessState, "4521@chatroom"), null, "重开会话就是把这个群记的会话删掉");
+const tmpWs = fs.mkdtempSync(path.join(os.tmpdir(), "wfws-"));
+const pathWs = normalizeWorkspaces([{ name: "项目A", dsh_workspace: "ws-1", dsh_workspace_path: tmpWs, tasks: [] }]);
+assert.equal(pathWs[0].dsh_workspace_path, tmpWs, "DSH 工作区路径能存进任务组");
+assert.equal(sessionCwd(pathWs[0], { name: "测试群" }), path.join(tmpWs, "测试群"), "会话按群名分目录");
+fs.rmSync(tmpWs, { recursive: true, force: true });
+
+// —— 自动归组：命中派活时按会话名建组，同名组复用
+assert.equal(DEFAULT_CONFIG.group_auto, true, "自动归组默认开");
+const gList = [];
+const g1 = ensureGroup(gList, { chat_id: "4521@chatroom", name: "测试群", kind: "group" }, { dsh_workspace: "ws-9", dsh_workspace_path: "C:\\ai" });
+assert.equal(g1.created, true, "没组就自动建");
+assert.equal(g1.ws.name + "|" + g1.ws.dsh_workspace, "测试群|ws-9", "组名用会话名，并继承默认工作区");
+const g2 = ensureGroup(gList, { chat_id: "4521@chatroom", name: "测试群" }, {});
+assert.equal(g2.created, false, "已有组不再建");
+assert.equal(g2.ws.id, g1.ws.id, "同一个会话还是那个组");
+const g3 = ensureGroup(gList, { chat_id: "999@chatroom", name: "测试群" }, {});
+assert.equal(g3.created, false, "同名组直接复用");
+assert.equal(gList.length, 1, "同名不会建出第二个组");
+const g4 = ensureGroup(gList, { chat_id: "777@chatroom", name: "客户A" }, {});
+assert.equal(g4.created, true, "不同会话各建各的组");
+assert.equal(gList.length, 2);
+
+console.log("selftest ok: " + "75 项断言通过");
