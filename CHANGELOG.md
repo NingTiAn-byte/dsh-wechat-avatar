@@ -1,5 +1,11 @@
 # 更新说明
 
+## v0.8.1 — 修「交给 DSH」报 session.create accepts workspaceId or cwd, not both
+
+- DSH 的 `sessionController.create()` 只接受一个位置：传 `workspaceId` 就落在工作区根目录，传 `cwd` 就只按目录建；两个一起传直接 `bad-request`。旧代码在「绑了 DSH 工作区 + 按群名分子目录」时把两个都塞进去，于是每次交接都失败。
+- 现在二选一：绑了工作区就只传 `workspaceId`（会话照常出现在你左侧栏的工作区里），子目录 `<工作区路径>\<群名>` 不再当 `cwd` 传，而是写进 prompt 的「建议工作目录」并说明会话根目录是工作区根；没绑工作区时才用 `cwd`。
+- 测试：handofftest 16 → 18 组（只传 workspaceId / 只传 cwd / prompt 带子目录说明）。
+
 ## v0.8.0 — AI 复核：规则判不出来的时候，让 agent 看上下文
 
 - 新增配置 `ai: { enabled: false, perRound: 8 }`；面板「什么才算派活」里多一个「AI 复核」开关，默认关。

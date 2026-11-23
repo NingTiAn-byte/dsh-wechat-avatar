@@ -158,11 +158,18 @@ assert.equal(fs.statSync(cwd).isDirectory(), true, "子目录要真的建出来"
 assert.equal(sessionCwd({}, { name: "测试群" }), "", "没绑路径就退回工作区根目录");
 assert.equal(chatSubdir({ name: "a/b:c*?" }), "a_b_c__", "文件名非法字符换成下划线");
 
-// 16. 新建会话时 workspaceId 与 cwd 一起带上
+// 16. 绑了 DSH 工作区时只传 workspaceId（再带 cwd 会被 DSH 拒掉），子目录留在 prompt 里
 createReq = null;
 await handoffToDsh(wsCtx, task, { ...ws, dsh_workspace: "ws-abc", dsh_workspace_path: tmpWs }, { cwd });
-assert.equal(createReq.workspaceId, "ws-abc");
-assert.equal(createReq.cwd, cwd);
+assert.deepEqual(createReq, { workspaceId: "ws-abc" }, "只传 workspaceId，不能和 cwd 同时出现");
+const briefWithCwd = taskBrief(task, { ...ws, dsh_workspace: "ws-abc" }, cwd);
+assert.ok(briefWithCwd.includes(cwd), "子目录要写进 prompt");
+assert.ok(briefWithCwd.includes("工作区根"), "并说明会话根目录是工作区根");
+
+// 17. 没绑工作区但有 cwd：只传 cwd
+createReq = null;
+await handoffToDsh(wsCtx, task, ws, { cwd });
+assert.deepEqual(createReq, { cwd }, "没绑工作区就只传 cwd");
 fs.rmSync(tmpWs, { recursive: true, force: true });
 
-console.log("handofftest ok: 16 组断言通过（假 ctx，没有新建真实会话）");
+console.log("handofftest ok: 17 组断言通过（假 ctx，没有新建真实会话）");
