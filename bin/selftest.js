@@ -9,6 +9,7 @@ import { judge } from "../lib/judge.js";
 import { gateOf } from "../lib/policy.js";
 import { WeChatAdapter } from "../lib/wechat.js";
 import { loadState, takeFresh, getChatSession, setChatSession, dropChatSession } from "../lib/state.js";
+import { taskBrief, splitAsk } from "../lib/handoff.js";
 import { nextDelay, nextFails, describePoll, DEFAULT_POLL } from "../lib/schedule.js";
 
 // 断言条数自动统计，别手写数字（70→75 这种改一次忘一次）
@@ -22,6 +23,9 @@ import { namesForChat, usableNames } from "../lib/names.js";
 import { sanitizePatch, mergePatch } from "../lib/api.js";
 import { DEFAULT_CONFIG } from "../lib/config.js";
 import { ensureGroup } from "../lib/workspaces.js";
+import { classify } from "../lib/kind.js";
+import * as lessons from "../lib/lessons.js";
+import { buildPrompt, parseVerdicts, entryOf, transcriptOf } from "../lib/ai.js";
 import { sessionCwd } from "../lib/handoff.js";
 import { normalizeTask, normalizeWorkspaces, updateWorkspace } from "../lib/workspaces.js";
 
@@ -135,11 +139,19 @@ assert.equal((await im.sendText("chat_proj", "hi")).dry_run, true, "默认 dryRu
 assert.equal((await im.sendText("chat_proj", "hi", { dryRun: false })).dry_run, true, "mock 下连非 dryRun 都不发（真适配器的拒绝在 adaptertest 里测）");
 
 // —— 交给 DSH：默认不自动交，回执字段要能过 normalizeTask（否则存盘就丢）
-assert.equal(DEFAULT_CONFIG.handoff.auto, false, "自动交付默认关");
+assert.equal(DEFAULT_CONFIG.handoff.auto, true, "自动交付默认开（识别到就走）");
 assert.deepEqual(sanitizePatch({ handoff: { auto: true } }), { handoff: { auto: true } }, "自动交付开关能落库");
 assert.deepEqual(mergePatch({ handoff: { maxPerScan: 3 } }, sanitizePatch({ handoff: { auto: true } })).handoff, { maxPerScan: 3, auto: true }, "开关与上限合并");
 const keptTask = normalizeTask({ title: "x", session_id: "session-1", reply: "做完了" });
 assert.equal(keptTask.session_id + "|" + keptTask.reply, "session-1|做完了", "会话 id 与回执能存进任务");
+const askedTask = normalizeTask({ title: "x", ask: "后台是哪个环境？", status: "waiting" });
+assert.equal(askedTask.status, "waiting", "等你回话是一种任务状态");
+assert.equal(askedTask.ask, "后台是哪个环境？", "问我的话能存进任务");
+const askSplit = splitAsk("【等你回话】后台是哪个环境？测试还是生产？");
+assert.equal(askSplit.needs_input, true, "带标记的回复算在问我");
+assert.equal(splitAsk("已经改好了，文件在 a.md").needs_input, false, "正常收尾不算提问");
+assert.equal(splitAsk("【等你确认计划】1. 改配置 2. 重启").needs_input, true, "等你确认计划也算挂起");
+assert.ok(taskBrief({ title: "t", kind: "task" }, {}, "", []).includes("等你回话"), "简报里交代了卡住时怎么问");
 
 // —— 工作区可以绑到用户已有的 DSH 工作区，交给 DSH 的会话就建在里面
 const wsList = normalizeWorkspaces([{ name: "项目A", chats: ["a"], dsh_workspace: "ws-123", tasks: [] }]);
@@ -204,6 +216,75 @@ assert.equal(gList.length, 2);
   assert.ok(bad.error, "报错带原因");
   const cfgDef = (await import("../lib/config.js")).DEFAULT_CONFIG;
   assert.equal(cfgDef.ai.enabled, false, "AI 复核默认关");
+}
+
+// ---- 工作记录 / 知识库 ----
+{
+  const kb = await import("../lib/kb.js");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kb-"));
+  kb.setKbDir(tmp);
+  const e1 = kb.record({ task_id: "t1", chat: "测试群", chat_id: "c1", sender: "张三", title: "改一下报价单", need: "把报价单价格改成 9 折", status: "todo" });
+  assert.equal(e1.title, "改一下报价单", "记录标题");
+  kb.record({ task_id: "t1", status: "done", reply: "已经改好，9 折" });
+  const idx = kb.loadIndex();
+  assert.equal(idx.entries.length, 1, "同 task_id 只留一条");
+  assert.equal(idx.entries[0].status, "done", "回执写回同一条");
+  assert.ok(fs.existsSync(path.join(tmp, "测试群.md")), "每个群一个 md");
+  const md = fs.readFileSync(path.join(tmp, "测试群.md"), "utf8");
+  assert.ok(md.includes("已经改好"), "md 里有回执");
+  assert.equal(kb.search("报价").length, 1, "关键词能搜到");
+  assert.equal(kb.search("报价 张三").length, 1, "多个词都要命中");
+  assert.equal(kb.search("报价", { chat: "别的群" }).length, 0, "按群过滤");
+  assert.equal(kb.recentForChat("c1", 3).length, 1, "按会话取最近记录");
+  const brief = taskBrief({ title: "再改一版", source: { chat_id: "c1", chat_name: "测试群" } }, { name: "组" }, "", kb.recentForChat("c1", 3));
+  assert.ok(brief.includes("这个群之前的记录"), "交给 DSH 时带上历史");
+  assert.ok(brief.includes("报价单"), "历史里有标题");
+  kb.setKbDir("");
+}
+
+// 工作边界：先把「问答案」和「动手做」分开
+{
+  assert.equal(classify("这个报价还能再低吗").kind, "needs_you", "问价 = 只有本人知道的信息");
+  assert.equal(classify("帮我把报价单改成九折").kind, "task", "有动手说法算任务");
+  assert.equal(classify("下周的会议纪要整理一下发我").kind, "task", "整理算任务");
+  assert.equal(classify("你们那边什么时候能到货").kind, "needs_you", "问对方那边的情况 = 要本人补信息");
+  assert.equal(classify("收到").kind, "chatter", "收到不算活");
+  assert.equal(classify("好的，收到👌").kind, "chatter", "点头不算活");
+  assert.equal(classify("这个功能怎么用").kind, "task", "一般问题当活处理");
+  assert.equal(classify("把验收单并进合同").kind, "task", "并进算动手");
+  const t = normalizeTask({ title: "问个价", kind: "needs_you", status: "need_info" });
+  assert.equal(t.kind, "needs_you", "等你补信息的类型能落库");
+  assert.equal(t.status, "need_info", "状态能落库");
+  assert.equal(normalizeTask({ title: "写个方案" }).kind, "task", "默认是任务");
+  assert.equal(normalizeTask({ title: "x", auto_answered: 1 }).auto_answered, true, "自动回答标记能落库");
+  assert.equal(normalizeTask({ title: "x", created_at: "2026-11-26T01:02:03.000Z" }).created_at, "2026-11-26T01:02:03.000Z", "任务建立时间能落库");
+}
+
+// AI 复核的 prompt 要能区分两类工作，并把答案带回来
+{
+  const e = entryOf("c_t1", { content: "这个多少钱", sender_name: "张三" }, { name: "测试群", chat_id: "c1", kind: "dm" }, transcriptOf([], "", {}, 3), "t1");
+  assert.equal(e.task_id, "t1", "entry 带 task_id");
+  const p = buildPrompt([{ ...e, work_kind: "info" }], { selfName: "我", selfId: "wxid_me" });
+  assert.ok(p.includes("问答案"), "prompt 标出问答型");
+  assert.ok(p.includes("answer"), "prompt 要求带回答案");
+  const parsed = parseVerdicts('[{"id":"c_t1","is_work":true,"title":"","answer":"9 折，120 一份","confidence":0.9,"reason":"在问价"}]');
+  assert.equal(parsed.ok, true, "带 answer 的 JSON 能解析");
+  assert.equal(parsed.items[0].answer, "9 折，120 一份", "答案被保留");
+}
+
+// 叉掉的任务要变成否例，之后形似的消息不再当活
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "lessons-"));
+  const rec = lessons.add({ text: "麻烦再看下这版", chat_id: "c1", chat: "张三 测试", sender: "我" }, tmp);
+  assert.equal(rec.chat_id, "c1", "否例能落库");
+  assert.ok(lessons.hit("c1", "麻烦再看下这版吧", tmp), "同会话里形似的能命中");
+  assert.equal(lessons.hit("c2", "麻烦再看下这版", tmp), null, "别的会话不串");
+  lessons.add({ text: "麻烦再看下这版", chat_id: "c1" }, tmp);
+  assert.equal(lessons.all(tmp).length, 1, "重复的只更新不新增");
+  assert.equal(lessons.all(tmp)[0].hits, 2, "命中次数会累加");
+  assert.equal(lessons.similar("好的", "把合同改一下"), false, "短句不会误判成同一类");
+  const p2 = buildPrompt([{ id: "c_x", chat: "张三 测试", kind: "dm", sender: "我", text: "麻烦再看下这版", transcript: { rows: [] } }], { avoid: ["麻烦再看下这版"] });
+  assert.ok(p2.includes("否掉"), "判定 prompt 带上否例");
 }
 
 console.log("selftest ok: " + nAssert + " 项断言通过");

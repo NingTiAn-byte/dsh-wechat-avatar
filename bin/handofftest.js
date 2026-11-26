@@ -30,7 +30,7 @@ assert.equal(r1.sessionId, "session-x");
 assert.equal(sent && sent.role, "user", "投进去的必须是 user 消息");
 assert.match(sent.content[0].text, /把接口文档补上/, "简报里要有任务标题");
 assert.match(sent.content[0].text, /项目群（李娜）/, "简报里要带来源");
-assert.match(sent.content[0].text, /等我确认/, "简报里要有「先给方案」的约束");
+assert.match(sent.content[0].text, /等我(确认|回「执行」)/, "简报里要有「先给方案」的约束");
 
 // 2. 部署里没有会话服务
 const r2 = await handoffToDsh({}, task, ws);
